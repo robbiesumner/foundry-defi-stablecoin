@@ -2,6 +2,10 @@
 src = "src"
 out = "out"
 libs = ["lib"]
-remappings = ["@solmate/=lib/solmate/src/"]
+remappings = [
+    "@solmate/=lib/solmate/src/",
+    "@openzeppelin/contracts/=lib/openzeppelin-contracts/contracts/",
+    "@chainlink/contracts/=lib/chainlink-brownie-contracts/contracts/",
+]
 
 # See more config options https://github.com/foundry-rs/foundry/tree/master/config

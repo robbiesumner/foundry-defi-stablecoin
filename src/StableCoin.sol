@@ -26,10 +26,7 @@ contract StableCoin is ERC20, Owned {
     /// receive function (if exists)
     /// fallback function (if exists)
     /// external
-    function mint(
-        address to,
-        uint256 amount
-    ) external onlyOwner returns (bool) {
+    function mint(address to, uint256 amount) external onlyOwner returns (bool) {
         if (to == address(0)) {
             revert StableCoin__MintToZeroAddress();
         }
