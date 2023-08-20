@@ -20,29 +20,32 @@ contract STBLEngine is ReentrancyGuard {
     /* Type declarations */
 
     /* State variables */
-    uint256 private constant LIQUIDATION_THRESHOLD = 2; // 200% collateralization ratio
     StableCoin private immutable i_STBL;
+
+    uint256 private constant LIQUIDATION_THRESHOLD = 50;
+    uint256 private constant MIN_HEALTH_FACTOR = 1e18;
+    uint256 private constant PRECISION = 1e18;
 
     /// @dev this array stores the addresses of the allowed collateral tokens
     address[] private s_tokens;
-
     /// @dev this mapping stores the price feed addresses for the allowed collateral tokens
     mapping(address token => address priceFeeds) private s_priceFeeds;
-
     /// @dev this mapping stores the amount of collateral deposited by each user for each token
     mapping(address user => mapping(address token => uint256 amount)) private s_collateralDeposited;
-
+    /// @dev this mapping stores the amount of `StableCoin` minted by each user
     mapping(address user => uint256) private s_stblMinted;
 
     /* Events */
     event CollateralDeposit(address indexed user, address indexed token, uint256 amount);
+    event CollateralWithdrawal(address indexed user, address indexed token, uint256 amount);
 
     /* Errors */
     error STBLEngine__LengthOfTokensAndPriceFeedsDoNotMatch();
     error STBLEngine__AmountZero();
     error STBLEngine__TokenNotAllowed(address token);
     error STBLEngine__TransferFailed();
-    error STBLEngine__RatioBelowThreshold();
+    error STBLEngine__BadHealthFactor(uint256 healthFactor);
+    error STBLEngine__GoodHealthFactor(uint256 healthFactor);
 
     /* Modifiers */
     modifier moreThanZero(uint256 amount) {
@@ -73,21 +76,57 @@ contract STBLEngine is ReentrancyGuard {
         i_STBL = new StableCoin();
     }
 
-    /// receive function (if exists)
-    /// fallback function (if exists)
     /// external
+    /**
+     * This function lets the user deposit collateral and mint `StableCoin` in only one transaction.
+     * @param collateralToken The address of the ERC20 token to deposit
+     * @param collateralAmount The amount of `collateralToken` to deposit
+     * @param stblAmount The amount of `StableCoin` to mint
+     */
+    function depositCollateralAndMintStbl(address collateralToken, uint256 collateralAmount, uint256 stblAmount)
+        external
+    {
+        deposit(collateralToken, collateralAmount);
+        mintStbl(stblAmount);
+    }
 
+    /**
+     * This function lets the user burn `StableCoin` and withdraw collateral in only one transaction.
+     * @param collateralToken The address of the ERC20 token to withdraw
+     * @param collateralAmount The amount of `collateralToken` to withdraw
+     * @param stblAmount The amount of `StableCoin` to burn
+     */
+    function burnStblAndWithdrawCollateral(address collateralToken, uint256 collateralAmount, uint256 stblAmount)
+        external
+    {
+        burnSTBL(stblAmount);
+        withdraw(collateralToken, collateralAmount);
+    }
+
+    /**
+     * This function lets the user liquidate another user's position.
+     * @param collateralToken The address of the ERC20 token to withdraw
+     * @param user The address of the user to liquidate
+     */
+    function liquidate(address collateralToken, address user) external nonReentrant {
+        uint256 healthFactor = getHealthFactor(user);
+        if (healthFactor > MIN_HEALTH_FACTOR) {
+            revert STBLEngine__GoodHealthFactor(healthFactor);
+        }
+        // TODO: finish function
+    }
+
+    function getStblAddress() external view returns (address) {
+        return address(i_STBL);
+    }
+
+    /// public
     /**
      * This function lets the user deposit collateral into the contract.
      * @param token The address of the ERC20 token to deposit
      * @param amount The amount of `token` to deposit
      */
-    function deposit(address token, uint256 amount)
-        external
-        onlyAllowedToken(token)
-        moreThanZero(amount)
-        nonReentrant
-    {
+    function deposit(address token, uint256 amount) public onlyAllowedToken(token) moreThanZero(amount) nonReentrant {
         s_collateralDeposited[msg.sender][token] += amount;
         emit CollateralDeposit(msg.sender, token, amount);
 
@@ -97,18 +136,30 @@ contract STBLEngine is ReentrancyGuard {
         }
     }
 
-    function withdraw() external {}
+    /**
+     * This function lets the user withdraw collateral deposited into the contract.
+     * @param token The address of the ERC20 token to withdraw
+     * @param amount The amount of `token` to withdraw
+     */
+    function withdraw(address token, uint256 amount) public moreThanZero(amount) nonReentrant {
+        s_collateralDeposited[msg.sender][token] -= amount;
+        emit CollateralWithdrawal(msg.sender, token, amount);
+        revertIfHealthFactorIsBad(msg.sender);
+
+        bool s = IERC20(token).transfer(msg.sender, amount);
+        if (!s) {
+            revert STBLEngine__TransferFailed();
+        }
+    }
 
     /**
      * This function lets the user mint `StableCoin`.
      * @notice The user must have more collateral deposited than the minimum threshold.
      * @param amount The amount of `StableCoin` to mint
      */
-    function mintStbl(uint256 amount) external moreThanZero(amount) nonReentrant {
+    function mintStbl(uint256 amount) public moreThanZero(amount) nonReentrant {
         s_stblMinted[msg.sender] += amount;
-        if (!hasGoodRatio(msg.sender)) {
-            revert STBLEngine__RatioBelowThreshold();
-        }
+        revertIfHealthFactorIsBad(msg.sender);
 
         bool s = i_STBL.mint(msg.sender, amount);
         if (!s) {
@@ -116,25 +167,28 @@ contract STBLEngine is ReentrancyGuard {
         }
     }
 
-    function burnSTBL() external {}
+    /**
+     * This function lets the user burn `StableCoin`.
+     * @param amount The amount of `StableCoin` to burn
+     */
+    function burnSTBL(uint256 amount) public moreThanZero(amount) {
+        s_stblMinted[msg.sender] -= amount;
 
-    function liquidate() external {}
-
-    function getStblAddress() external view returns (address) {
-        return address(i_STBL);
+        bool s = i_STBL.transferFrom(msg.sender, address(this), amount);
+        if (!s) {
+            revert STBLEngine__TransferFailed();
+        }
+        i_STBL.burn(amount);
     }
 
-    /// public
     /**
-     * This function gets the ratio of the total collateral value deposited by the user to the total amount of `StableCoin` minted by the user.
+     * This function returns the health factor of the user. It should be greater than 1.
      * @param user The address of the user
-     * @return ratio The ratio of the total collateral value deposited by the user to the total amount of `StableCoin` minted by the user
+     * @return healthFactor The ratio of the total collateral value deposited by the user to the total amount of `StableCoin` minted by the user.
      */
-    function getCollateralToStableCoinRatio(address user) public view returns (uint256 ratio) {
-        uint256 collateralValue = getCollateralValue(user);
-        uint256 stblMinted = s_stblMinted[user];
-
-        ratio = collateralValue / stblMinted;
+    function getHealthFactor(address user) public view returns (uint256 healthFactor) {
+        uint256 collateralAdjusted = (getCollateralValue(user) * LIQUIDATION_THRESHOLD) * PRECISION / 100;
+        healthFactor = collateralAdjusted / s_stblMinted[user];
     }
 
     /**
@@ -145,33 +199,33 @@ contract STBLEngine is ReentrancyGuard {
     function getCollateralValue(address user) public view returns (uint256 collateralValue) {
         for (uint256 i = 0; i < s_tokens.length; i++) {
             address token = s_tokens[i];
-            collateralValue += _UsdValue(token, s_collateralDeposited[user][token]);
+            collateralValue += _usdValue(token, s_collateralDeposited[user][token]);
         }
     }
 
     /// internal
+    /**
+     * This function checks if the user has a good enough ratio of collateral to `StableCoin` minted.
+     * @param user The address of the user
+     */
+    function revertIfHealthFactorIsBad(address user) internal view {
+        uint256 userHealthFactor = getHealthFactor(user);
+        if (userHealthFactor < MIN_HEALTH_FACTOR) {
+            revert STBLEngine__BadHealthFactor(userHealthFactor);
+        }
+    }
+
     /**
      * This function gets the value of `amount` of `token` in us dollars.
      * @param token The address of the ERC20 token
      * @param amount The amount of `token`
      * @return usdValue The value of `amount` of `token` in us dollars
      */
-    function _UsdValue(address token, uint256 amount) internal view returns (uint256 usdValue) {
+    function _usdValue(address token, uint256 amount) internal view returns (uint256 usdValue) {
         AggregatorV3Interface priceFeed = AggregatorV3Interface(s_priceFeeds[token]);
         uint8 decimals = priceFeed.decimals();
         (, int256 price,,,) = priceFeed.latestRoundData();
 
         usdValue = (amount * (uint256(price) * 10 ** (18 - decimals))) / (10e18);
     }
-
-    /**
-     * This function checks if the user has a ratio that satisfies the minimum threshold.
-     * @param user The address of the user to check for
-     * @return bool Whether the user has a ratio that satisfies the minimum threshold
-     */
-    function hasGoodRatio(address user) internal view returns (bool) {
-        return getCollateralToStableCoinRatio(user) >= LIQUIDATION_THRESHOLD;
-    }
-
-    /// private
 }

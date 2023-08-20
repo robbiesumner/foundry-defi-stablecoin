@@ -13,11 +13,7 @@ import {ERC20Mock} from "@openzeppelin/contracts/mocks/ERC20Mock.sol";
 contract STBLEngineTest is Test {
     /* Events */
     event CollateralDeposit(address indexed user, address indexed token, uint256 amount);
-    /**
-     *
-     */
 
-    DeploySTBL deployer;
     address wethPriceFeed;
     address wbtcPriceFeed;
     address weth;
@@ -32,7 +28,7 @@ contract STBLEngineTest is Test {
     uint256 constant DEPOSIT = 100;
 
     function setUp() external {
-        deployer = new DeploySTBL();
+        DeploySTBL deployer = new DeploySTBL();
 
         HelperConfig helperConfig;
         (stbl, stblEngine, helperConfig) = deployer.run();
@@ -45,8 +41,9 @@ contract STBLEngineTest is Test {
     /* Deposit */
 
     function testUserCannotDepositZeroCollateral() external {
+        vm.startPrank(USER);
+        IERC20(weth).approve(address(stblEngine), DEPOSIT);
         vm.expectRevert(STBLEngine.STBLEngine__AmountZero.selector);
-        vm.prank(USER);
         stblEngine.deposit(weth, 0);
     }
 
