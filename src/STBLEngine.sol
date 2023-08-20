@@ -104,7 +104,7 @@ contract STBLEngine is ReentrancyGuard {
      * @notice The user must have more collateral deposited than the minimum threshold.
      * @param amount The amount of `StableCoin` to mint
      */
-    function mintSTBL(uint256 amount) external moreThanZero(amount) nonReentrant {
+    function mintStbl(uint256 amount) external moreThanZero(amount) nonReentrant {
         s_stblMinted[msg.sender] += amount;
         if (!hasGoodRatio(msg.sender)) {
             revert STBLEngine__RatioBelowThreshold();
@@ -120,6 +120,10 @@ contract STBLEngine is ReentrancyGuard {
 
     function liquidate() external {}
 
+    function getStblAddress() external view returns (address) {
+        return address(i_STBL);
+    }
+
     /// public
     /**
      * This function gets the ratio of the total collateral value deposited by the user to the total amount of `StableCoin` minted by the user.
@@ -134,30 +138,30 @@ contract STBLEngine is ReentrancyGuard {
     }
 
     /**
-     * This function gets the value of the total collateral value deposited by the user in euros.
+     * This function gets the value of the total collateral value deposited by the user in us dollars.
      * @param user The address of the user
-     * @return collateralValue The value of the total collateral value deposited by the user in euros
+     * @return collateralValue The value of the total collateral value deposited by the user in us dollars
      */
     function getCollateralValue(address user) public view returns (uint256 collateralValue) {
         for (uint256 i = 0; i < s_tokens.length; i++) {
             address token = s_tokens[i];
-            collateralValue += _euroValue(token, s_collateralDeposited[user][token]);
+            collateralValue += _UsdValue(token, s_collateralDeposited[user][token]);
         }
     }
 
     /// internal
     /**
-     * This function gets the value of `amount` of `token` in euros.
+     * This function gets the value of `amount` of `token` in us dollars.
      * @param token The address of the ERC20 token
      * @param amount The amount of `token`
-     * @return euroValue The value of `amount` of `token` in euros
+     * @return usdValue The value of `amount` of `token` in us dollars
      */
-    function _euroValue(address token, uint256 amount) internal view returns (uint256 euroValue) {
+    function _UsdValue(address token, uint256 amount) internal view returns (uint256 usdValue) {
         AggregatorV3Interface priceFeed = AggregatorV3Interface(s_priceFeeds[token]);
         uint8 decimals = priceFeed.decimals();
         (, int256 price,,,) = priceFeed.latestRoundData();
 
-        euroValue = (amount * (uint256(price) * 10 ** (18 - decimals))) / (10e18);
+        usdValue = (amount * (uint256(price) * 10 ** (18 - decimals))) / (10e18);
     }
 
     /**
