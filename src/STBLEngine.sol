@@ -23,6 +23,8 @@ contract STBLEngine is ReentrancyGuard {
     StableCoin private immutable i_STBL;
 
     uint256 private constant LIQUIDATION_THRESHOLD = 50;
+    uint256 private constant LIQUIDATION_PRECISION = 100;
+    uint256 private constant LIQUIDATION_BONUS = 10;
     uint256 private constant MIN_HEALTH_FACTOR = 1e18;
     uint256 private constant PRECISION = 1e18;
 
@@ -37,7 +39,7 @@ contract STBLEngine is ReentrancyGuard {
 
     /* Events */
     event CollateralDeposit(address indexed user, address indexed token, uint256 amount);
-    event CollateralWithdrawal(address indexed user, address indexed token, uint256 amount);
+    event CollateralWithdrawal(address indexed from, address indexed to, address indexed token, uint256 amount);
 
     /* Errors */
     error STBLEngine__LengthOfTokensAndPriceFeedsDoNotMatch();
@@ -46,6 +48,7 @@ contract STBLEngine is ReentrancyGuard {
     error STBLEngine__TransferFailed();
     error STBLEngine__BadHealthFactor(uint256 healthFactor);
     error STBLEngine__GoodHealthFactor(uint256 healthFactor);
+    error STBLEngine__HealthFactorNotImproved(uint256 healthFactorBefore, uint256 healthFactorAfter);
 
     /* Modifiers */
     modifier moreThanZero(uint256 amount) {
@@ -99,7 +102,7 @@ contract STBLEngine is ReentrancyGuard {
     function burnStblAndWithdrawCollateral(address collateralToken, uint256 collateralAmount, uint256 stblAmount)
         external
     {
-        burnSTBL(stblAmount);
+        burnStbl(stblAmount);
         withdraw(collateralToken, collateralAmount);
     }
 
@@ -108,12 +111,26 @@ contract STBLEngine is ReentrancyGuard {
      * @param collateralToken The address of the ERC20 token to withdraw
      * @param user The address of the user to liquidate
      */
-    function liquidate(address collateralToken, address user) external nonReentrant {
+    function liquidate(address collateralToken, address user, uint256 coveredDebt)
+        external
+        moreThanZero(coveredDebt)
+        nonReentrant
+    {
         uint256 healthFactor = getHealthFactor(user);
-        if (healthFactor > MIN_HEALTH_FACTOR) {
+        if (healthFactor >= MIN_HEALTH_FACTOR) {
             revert STBLEngine__GoodHealthFactor(healthFactor);
         }
-        // TODO: finish function
+
+        uint256 tokenAmount = _tokenValue(collateralToken, coveredDebt);
+        uint256 bonus = tokenAmount * LIQUIDATION_BONUS / LIQUIDATION_PRECISION;
+
+        _withdraw(collateralToken, tokenAmount + bonus, user, msg.sender);
+        _burnStbl(msg.sender, user, coveredDebt);
+
+        uint256 healthFactorAfter = getHealthFactor(user);
+        if (healthFactorAfter <= healthFactor) {
+            revert STBLEngine__HealthFactorNotImproved(healthFactor, healthFactorAfter);
+        }
     }
 
     function getStblAddress() external view returns (address) {
@@ -142,14 +159,8 @@ contract STBLEngine is ReentrancyGuard {
      * @param amount The amount of `token` to withdraw
      */
     function withdraw(address token, uint256 amount) public moreThanZero(amount) nonReentrant {
-        s_collateralDeposited[msg.sender][token] -= amount;
-        emit CollateralWithdrawal(msg.sender, token, amount);
         revertIfHealthFactorIsBad(msg.sender);
-
-        bool s = IERC20(token).transfer(msg.sender, amount);
-        if (!s) {
-            revert STBLEngine__TransferFailed();
-        }
+        _withdraw(token, amount, msg.sender, msg.sender);
     }
 
     /**
@@ -171,14 +182,8 @@ contract STBLEngine is ReentrancyGuard {
      * This function lets the user burn `StableCoin`.
      * @param amount The amount of `StableCoin` to burn
      */
-    function burnSTBL(uint256 amount) public moreThanZero(amount) {
-        s_stblMinted[msg.sender] -= amount;
-
-        bool s = i_STBL.transferFrom(msg.sender, address(this), amount);
-        if (!s) {
-            revert STBLEngine__TransferFailed();
-        }
-        i_STBL.burn(amount);
+    function burnStbl(uint256 amount) public moreThanZero(amount) {
+        _burnStbl(msg.sender, msg.sender, amount);
     }
 
     /**
@@ -187,7 +192,8 @@ contract STBLEngine is ReentrancyGuard {
      * @return healthFactor The ratio of the total collateral value deposited by the user to the total amount of `StableCoin` minted by the user.
      */
     function getHealthFactor(address user) public view returns (uint256 healthFactor) {
-        uint256 collateralAdjusted = (getCollateralValue(user) * LIQUIDATION_THRESHOLD) * PRECISION / 100;
+        uint256 collateralAdjusted =
+            getCollateralValue(user) * LIQUIDATION_THRESHOLD * PRECISION / LIQUIDATION_PRECISION;
         healthFactor = collateralAdjusted / s_stblMinted[user];
     }
 
@@ -204,6 +210,26 @@ contract STBLEngine is ReentrancyGuard {
     }
 
     /// internal
+    function _burnStbl(address burnedBy, address onBehalfOf, uint256 amount) internal {
+        s_stblMinted[onBehalfOf] -= amount;
+
+        bool s = i_STBL.transferFrom(burnedBy, address(this), amount);
+        if (!s) {
+            revert STBLEngine__TransferFailed();
+        }
+        i_STBL.burn(amount);
+    }
+
+    function _withdraw(address token, uint256 amount, address from, address to) internal {
+        s_collateralDeposited[from][token] -= amount;
+        emit CollateralWithdrawal(from, to, token, amount);
+
+        bool s = IERC20(token).transfer(to, amount);
+        if (!s) {
+            revert STBLEngine__TransferFailed();
+        }
+    }
+
     /**
      * This function checks if the user has a good enough ratio of collateral to `StableCoin` minted.
      * @param user The address of the user
@@ -213,6 +239,14 @@ contract STBLEngine is ReentrancyGuard {
         if (userHealthFactor < MIN_HEALTH_FACTOR) {
             revert STBLEngine__BadHealthFactor(userHealthFactor);
         }
+    }
+
+    function _tokenValue(address token, uint256 usdAmount) internal view returns (uint256 tokenValue) {
+        AggregatorV3Interface priceFeed = AggregatorV3Interface(s_priceFeeds[token]);
+        uint8 decimals = priceFeed.decimals();
+        (, int256 price,,,) = priceFeed.latestRoundData();
+
+        tokenValue = (usdAmount * (PRECISION)) / (uint256(price) * 10 ** (18 - decimals));
     }
 
     /**
@@ -226,6 +260,6 @@ contract STBLEngine is ReentrancyGuard {
         uint8 decimals = priceFeed.decimals();
         (, int256 price,,,) = priceFeed.latestRoundData();
 
-        usdValue = (amount * (uint256(price) * 10 ** (18 - decimals))) / (10e18);
+        usdValue = (amount * (uint256(price) * 10 ** (18 - decimals))) / (PRECISION);
     }
 }
