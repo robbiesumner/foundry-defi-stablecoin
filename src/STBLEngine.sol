@@ -46,9 +46,9 @@ contract STBLEngine is ReentrancyGuard {
     error STBLEngine__AmountZero();
     error STBLEngine__TokenNotAllowed(address token);
     error STBLEngine__TransferFailed();
-    error STBLEngine__BadHealthFactor(uint256 healthFactor);
-    error STBLEngine__GoodHealthFactor(uint256 healthFactor);
-    error STBLEngine__HealthFactorNotImproved(uint256 healthFactorBefore, uint256 healthFactorAfter);
+    error STBLEngine__BadHealthFactor();
+    error STBLEngine__GoodHealthFactor();
+    error STBLEngine__HealthFactorNotImproved();
 
     /* Modifiers */
     modifier moreThanZero(uint256 amount) {
@@ -96,10 +96,10 @@ contract STBLEngine is ReentrancyGuard {
     /**
      * This function lets the user burn `StableCoin` and withdraw collateral in only one transaction.
      * @param collateralToken The address of the ERC20 token to withdraw
-     * @param collateralAmount The amount of `collateralToken` to withdraw
      * @param stblAmount The amount of `StableCoin` to burn
+     * @param collateralAmount The amount of `collateralToken` to withdraw
      */
-    function burnStblAndWithdrawCollateral(address collateralToken, uint256 collateralAmount, uint256 stblAmount)
+    function burnStblAndWithdrawCollateral(address collateralToken, uint256 stblAmount, uint256 collateralAmount)
         external
     {
         burnStbl(stblAmount);
@@ -108,33 +108,36 @@ contract STBLEngine is ReentrancyGuard {
 
     /**
      * This function lets the user liquidate another user's position.
-     * @param collateralToken The address of the ERC20 token to withdraw
      * @param user The address of the user to liquidate
+     * @param collateralToken The address of the ERC20 token to withdraw
      */
-    function liquidate(address collateralToken, address user, uint256 coveredDebt)
+    function liquidate(address user, address collateralToken, uint256 coveredDebt)
         external
         moreThanZero(coveredDebt)
         nonReentrant
     {
         uint256 healthFactor = getHealthFactor(user);
         if (healthFactor >= MIN_HEALTH_FACTOR) {
-            revert STBLEngine__GoodHealthFactor(healthFactor);
+            revert STBLEngine__GoodHealthFactor();
         }
 
-        uint256 tokenAmount = _tokenValue(collateralToken, coveredDebt);
+        uint256 tokenAmount = getTokenValue(collateralToken, coveredDebt);
         uint256 bonus = tokenAmount * LIQUIDATION_BONUS / LIQUIDATION_PRECISION;
 
         _withdraw(collateralToken, tokenAmount + bonus, user, msg.sender);
         _burnStbl(msg.sender, user, coveredDebt);
 
-        uint256 healthFactorAfter = getHealthFactor(user);
-        if (healthFactorAfter <= healthFactor) {
-            revert STBLEngine__HealthFactorNotImproved(healthFactor, healthFactorAfter);
+        if (getHealthFactor(user) <= healthFactor) {
+            revert STBLEngine__HealthFactorNotImproved();
         }
     }
 
     function getStblAddress() external view returns (address) {
         return address(i_STBL);
+    }
+
+    function getCollateralAmount(address user, address token) external view returns (uint256) {
+        return s_collateralDeposited[user][token];
     }
 
     /// public
@@ -159,8 +162,8 @@ contract STBLEngine is ReentrancyGuard {
      * @param amount The amount of `token` to withdraw
      */
     function withdraw(address token, uint256 amount) public moreThanZero(amount) nonReentrant {
-        revertIfHealthFactorIsBad(msg.sender);
         _withdraw(token, amount, msg.sender, msg.sender);
+        revertIfHealthFactorIsBad(msg.sender);
     }
 
     /**
@@ -192,6 +195,9 @@ contract STBLEngine is ReentrancyGuard {
      * @return healthFactor The ratio of the total collateral value deposited by the user to the total amount of `StableCoin` minted by the user.
      */
     function getHealthFactor(address user) public view returns (uint256 healthFactor) {
+        if (s_stblMinted[user] == 0) {
+            return type(uint256).max;
+        }
         uint256 collateralAdjusted =
             getCollateralValue(user) * LIQUIDATION_THRESHOLD * PRECISION / LIQUIDATION_PRECISION;
         healthFactor = collateralAdjusted / s_stblMinted[user];
@@ -205,8 +211,30 @@ contract STBLEngine is ReentrancyGuard {
     function getCollateralValue(address user) public view returns (uint256 collateralValue) {
         for (uint256 i = 0; i < s_tokens.length; i++) {
             address token = s_tokens[i];
-            collateralValue += _usdValue(token, s_collateralDeposited[user][token]);
+            collateralValue += getUsdValue(token, s_collateralDeposited[user][token]);
         }
+    }
+
+    /**
+     * This function gets the value of `amount` of `token` in us dollars.
+     * @param token The address of the ERC20 token
+     * @param amount The amount of `token`
+     * @return usdValue The value of `amount` of `token` in us dollars
+     */
+    function getUsdValue(address token, uint256 amount) public view returns (uint256 usdValue) {
+        AggregatorV3Interface priceFeed = AggregatorV3Interface(s_priceFeeds[token]);
+        uint8 decimals = priceFeed.decimals();
+        (, int256 price,,,) = priceFeed.latestRoundData();
+
+        usdValue = (amount * (uint256(price) * 10 ** (18 - decimals))) / (PRECISION);
+    }
+
+    function getTokenValue(address token, uint256 usdAmount) public view returns (uint256 tokenValue) {
+        AggregatorV3Interface priceFeed = AggregatorV3Interface(s_priceFeeds[token]);
+        uint8 decimals = priceFeed.decimals();
+        (, int256 price,,,) = priceFeed.latestRoundData();
+
+        tokenValue = (usdAmount * (PRECISION)) / (uint256(price) * 10 ** (18 - decimals));
     }
 
     /// internal
@@ -237,29 +265,7 @@ contract STBLEngine is ReentrancyGuard {
     function revertIfHealthFactorIsBad(address user) internal view {
         uint256 userHealthFactor = getHealthFactor(user);
         if (userHealthFactor < MIN_HEALTH_FACTOR) {
-            revert STBLEngine__BadHealthFactor(userHealthFactor);
+            revert STBLEngine__BadHealthFactor();
         }
-    }
-
-    function _tokenValue(address token, uint256 usdAmount) internal view returns (uint256 tokenValue) {
-        AggregatorV3Interface priceFeed = AggregatorV3Interface(s_priceFeeds[token]);
-        uint8 decimals = priceFeed.decimals();
-        (, int256 price,,,) = priceFeed.latestRoundData();
-
-        tokenValue = (usdAmount * (PRECISION)) / (uint256(price) * 10 ** (18 - decimals));
-    }
-
-    /**
-     * This function gets the value of `amount` of `token` in us dollars.
-     * @param token The address of the ERC20 token
-     * @param amount The amount of `token`
-     * @return usdValue The value of `amount` of `token` in us dollars
-     */
-    function _usdValue(address token, uint256 amount) internal view returns (uint256 usdValue) {
-        AggregatorV3Interface priceFeed = AggregatorV3Interface(s_priceFeeds[token]);
-        uint8 decimals = priceFeed.decimals();
-        (, int256 price,,,) = priceFeed.latestRoundData();
-
-        usdValue = (amount * (uint256(price) * 10 ** (18 - decimals))) / (PRECISION);
     }
 }
