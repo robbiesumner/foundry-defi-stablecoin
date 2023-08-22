@@ -140,6 +140,10 @@ contract STBLEngine is ReentrancyGuard {
         return s_collateralDeposited[user][token];
     }
 
+    function getValidCollateralTokens() external view returns (address[] memory) {
+        return s_tokens;
+    }
+
     /// public
     /**
      * This function lets the user deposit collateral into the contract.
@@ -195,9 +199,8 @@ contract STBLEngine is ReentrancyGuard {
      * @return healthFactor The ratio of the total collateral value deposited by the user to the total amount of `StableCoin` minted by the user.
      */
     function getHealthFactor(address user) public view returns (uint256 healthFactor) {
-        if (s_stblMinted[user] == 0) {
-            return type(uint256).max;
-        }
+        if (s_stblMinted[user] == 0) return type(uint256).max;
+
         uint256 collateralAdjusted =
             getCollateralValue(user) * LIQUIDATION_THRESHOLD * PRECISION / LIQUIDATION_PRECISION;
         healthFactor = collateralAdjusted / s_stblMinted[user];
