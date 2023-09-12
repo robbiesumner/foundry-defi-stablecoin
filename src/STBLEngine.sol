@@ -5,6 +5,7 @@ import {StableCoin} from "./StableCoin.sol";
 import {ReentrancyGuard} from "@solmate/utils/ReentrancyGuard.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {AggregatorV3Interface} from "@chainlink/contracts/src/v0.8/interfaces/AggregatorV3Interface.sol";
+import {OracleLib} from "./libraries/OracleLib.sol";
 
 /**
  * @title STBLEngine
@@ -18,6 +19,7 @@ import {AggregatorV3Interface} from "@chainlink/contracts/src/v0.8/interfaces/Ag
  */
 contract STBLEngine is ReentrancyGuard {
     /* Type declarations */
+    using OracleLib for AggregatorV3Interface;
 
     /* State variables */
     StableCoin private immutable i_STBL;
@@ -240,7 +242,7 @@ contract STBLEngine is ReentrancyGuard {
     function getUsdValue(address token, uint256 amount) public view returns (uint256 usdValue) {
         AggregatorV3Interface priceFeed = AggregatorV3Interface(s_priceFeeds[token]);
         uint8 decimals = priceFeed.decimals();
-        (, int256 price,,,) = priceFeed.latestRoundData();
+        (, int256 price,,,) = priceFeed.staleCheckLatestRoundData();
 
         usdValue = (amount * (uint256(price) * 10 ** (18 - decimals))) / (PRECISION);
     }
@@ -248,7 +250,7 @@ contract STBLEngine is ReentrancyGuard {
     function getTokenValue(address token, uint256 usdAmount) public view returns (uint256 tokenValue) {
         AggregatorV3Interface priceFeed = AggregatorV3Interface(s_priceFeeds[token]);
         uint8 decimals = priceFeed.decimals();
-        (, int256 price,,,) = priceFeed.latestRoundData();
+        (, int256 price,,,) = priceFeed.staleCheckLatestRoundData();
 
         tokenValue = (usdAmount * (PRECISION)) / (uint256(price) * 10 ** (18 - decimals));
     }
