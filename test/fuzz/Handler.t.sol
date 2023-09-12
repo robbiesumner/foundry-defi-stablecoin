@@ -18,6 +18,9 @@ contract Handler is Test {
 
     address[] tokens;
 
+    address[] private users;
+    uint256 public timesMintCalled;
+
     constructor(STBLEngine _stblEngine, StableCoin _stbl) {
         stblEngine = _stblEngine;
         stbl = _stbl;
@@ -30,37 +33,51 @@ contract Handler is Test {
     }
 
     function deposit(uint256 collateralSeed, uint256 amountCollateral) external {
-        address validCollateral = _getCollateralFromSeed(collateralSeed);
+        address validCollateral = _getCollateralTokenFromSeed(collateralSeed);
         amountCollateral = bound(amountCollateral, 1, UPPER_BOUND); // not be zero
 
         vm.startPrank(USER);
         IERC20(validCollateral).approve(address(stblEngine), amountCollateral);
         stblEngine.deposit(validCollateral, amountCollateral);
         vm.stopPrank();
+
+        users.push(USER);
     }
 
-    function withdraw(uint256 collateralSeed, uint256 amountCollateral) external {
-        address validCollateral = _getCollateralFromSeed(collateralSeed);
-        uint256 maxAmountToWithdraw = stblEngine.getCollateralAmount(USER, validCollateral);
-        if (maxAmountToWithdraw == 0) return; // nothing to withdraw
+    // function withdraw(uint256 collateralSeed, uint256 amountCollateral) external {
+    //     address validCollateral = _getCollateralTokenFromSeed(collateralSeed);
+    //     uint256 maxAmountToWithdraw = stblEngine.getCollateralAmount(USER, validCollateral);
+    //     if (maxAmountToWithdraw == 0) return; // nothing to withdraw
 
-        amountCollateral = bound(amountCollateral, 1, maxAmountToWithdraw); // not be zero, but only withdraw what you have
+    //     amountCollateral = bound(amountCollateral, 1, maxAmountToWithdraw); // not be zero, but only withdraw what you have
 
-        vm.startPrank(USER);
-        stblEngine.withdraw(validCollateral, amountCollateral);
+    //     vm.startPrank(USER);
+    //     stblEngine.withdraw(validCollateral, amountCollateral);
+    //     vm.stopPrank();
+    // }
+
+    function mint(uint256 amountStbl, uint256 userSeed) external {
+        if (users.length == 0) return; // no deposit yet
+        address user = users[userSeed % users.length];
+        (uint256 dscMinted, uint256 collateralValue) = stblEngine.getUserInformation(user);
+        uint256 maxDscCanMint =
+            collateralValue * stblEngine.getLiquidationThreshold() / stblEngine.getLiquidationPrecision();
+
+        int256 dscToMint = int256(maxDscCanMint) - int256(dscMinted);
+
+        if (dscToMint <= 0) return; // nothing to mint
+
+        amountStbl = bound(amountStbl, 1, uint256(dscToMint)); // only mint what you can
+
+        vm.startPrank(user);
+        stblEngine.mintStbl(amountStbl);
         vm.stopPrank();
-    }
 
-    function mint(uint256 amountStbl) external {
-        amountStbl = bound(amountStbl, 1, UPPER_BOUND); // not be zero
-
-        vm.startPrank(USER);
-        stbl.mint(USER, amountStbl);
-        vm.stopPrank();
+        timesMintCalled++;
     }
 
     /* Helper */
-    function _getCollateralFromSeed(uint256 collateralSeed) private view returns (address) {
+    function _getCollateralTokenFromSeed(uint256 collateralSeed) private view returns (address) {
         uint256 index = collateralSeed % tokens.length;
         return tokens[index];
     }

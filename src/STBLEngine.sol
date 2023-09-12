@@ -132,6 +132,11 @@ contract STBLEngine is ReentrancyGuard {
         }
     }
 
+    function getUserInformation(address user) external view returns (uint256 dscMinted, uint256 collateralValue) {
+        dscMinted = s_stblMinted[user];
+        collateralValue = getCollateralValue(user);
+    }
+
     function getStblAddress() external view returns (address) {
         return address(i_STBL);
     }
@@ -142,6 +147,14 @@ contract STBLEngine is ReentrancyGuard {
 
     function getValidCollateralTokens() external view returns (address[] memory) {
         return s_tokens;
+    }
+
+    function getLiquidationThreshold() external pure returns (uint256) {
+        return LIQUIDATION_THRESHOLD;
+    }
+
+    function getLiquidationPrecision() external pure returns (uint256) {
+        return LIQUIDATION_PRECISION;
     }
 
     /// public

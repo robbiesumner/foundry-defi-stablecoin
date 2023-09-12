@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.19;
 
-import {Test} from "forge-std/Test.sol";
+import {Test, console} from "forge-std/Test.sol";
 import {StdInvariant} from "forge-std/StdInvariant.sol";
 import {Handler} from "./Handler.t.sol";
 import {DeploySTBL} from "../../script/DeploySTBL.s.sol";
@@ -14,6 +14,7 @@ contract InvariantsTest is StdInvariant, Test {
     STBLEngine stblEngine;
     StableCoin stbl;
     HelperConfig config;
+    Handler handler;
 
     address weth;
     address wbtc;
@@ -23,7 +24,7 @@ contract InvariantsTest is StdInvariant, Test {
         (stbl, stblEngine, config) = deployer.run();
         (,, weth, wbtc,) = config.activeConfig();
 
-        Handler handler = new Handler(stblEngine, stbl);
+        handler = new Handler(stblEngine, stbl);
         targetContract(address(handler));
     }
 
@@ -37,6 +38,14 @@ contract InvariantsTest is StdInvariant, Test {
         uint256 totalValueLocked = wethValue + wbtcValue;
         uint256 totalSupply = stbl.totalSupply();
 
+        console.log(handler.timesMintCalled());
+
         assertGe(totalValueLocked, totalSupply);
+    }
+
+    function invariant_getterShouldNotRevert() external view {
+        stblEngine.getLiquidationPrecision();
+        stblEngine.getLiquidationThreshold();
+        // TODO: add more
     }
 }
